@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eco-Tech Uganda | AI Smart Waste Portal</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body { background: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
+        .navbar { background: linear-gradient(90deg, #1a5928, #28a745); }
+        .card { border: none; border-radius: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); transition: 0.3s; }
+        #map { height: 450px; border-radius: 15px; }
+        .stat-card h3 { font-weight: bold; margin-top: 10px; }
+        .bin-card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 12px; border: 1px solid #eee; }
+        .progress { height: 8px; border-radius: 10px; }
+        
+        .pulse-critical { animation: pulse-red 2s infinite; }
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+        }
+        .ai-preview-box { height: 150px; background: #000; border-radius: 10px; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+        .ai-label { position: absolute; top: 10px; left: 10px; background: rgba(40, 167, 69, 0.8); color: white; padding: 2px 8px; border-radius: 5px; font-size: 0.7rem; }
+    </style>
+</head>
+
+<body>
+
+<nav class="navbar navbar-dark mb-4 shadow-sm">
+    <div class="container d-flex justify-content-between">
+        <span class="navbar-brand fw-bold">ECO-TECH UGANDA 🇺🇬</span>
+        <div class="d-flex align-items-center text-white small">
+            <span class="me-3">Node Status: <span class="badge bg-success">ACTIVE</span></span>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="row mb-4">
+        <div class="col-12 d-flex justify-content-between align-items-center bg-white p-3 rounded-4 shadow-sm">
+            <div class="d-flex align-items-center">
+                <label class="me-2 fw-bold small text-uppercase text-muted">Deployment:</label>
+                <select class="form-select form-select-sm" style="width: 180px;">
+                    <option>Kampala Central</option>
+                    <option>Makerere Area</option>
+                </select>
+            </div>
+            <div>
+                <button class="btn btn-dark btn-sm">System Health 🛠️</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4 text-center">
+        <div class="col-md-3"><div class="card stat-card p-3 border-start border-4 border-primary">
+            <small class="text-muted fw-bold text-uppercase">Online Bins</small><h3 id="total-bins">0</h3>
+        </div></div>
+        <div class="col-md-3"><div id="critical-card" class="card stat-card p-3 border-start border-4 border-danger">
+            <small class="text-muted fw-bold text-uppercase">Urgent Pickup</small><h3 id="full-bins">0</h3>
+        </div></div>
+        <div class="col-md-3"><div class="card stat-card p-3 border-start border-4 border-success">
+            <small class="text-muted fw-bold text-uppercase">Est. Weight</small><h3 id="waste-collected">0</h3>
+        </div></div>
+        <div class="col-md-3"><div class="card stat-card p-3 border-start border-4 border-info">
+            <small class="text-muted fw-bold text-uppercase">CO2 Savings</small><h3 id="co2-saved">0</h3>
+        </div></div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-lg-8">
+            <div class="card p-3 mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0">📍 Real-time Fleet Logistics</h6>
+                    <span id="route-status" class="badge bg-secondary">Awaiting Optimization</span>
+                </div>
+                <div id="map"></div>
+            </div>
+            
+            <div class="card p-3">
+                <h6 class="fw-bold mb-3">📋 System Activity Log</h6>
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm">
+                        <thead class="table-light small">
+                            <tr><th>Bin ID</th><th>Level</th><th>Last Sync</th><th>Status</th></tr>
+                        </thead>
+                        <tbody id="activity-log" style="font-size: 0.8rem;">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card p-3 mb-3 bg-dark text-white">
+                <h6 class="fw-bold text-success mb-3 small">🧠 AI COMPUTER VISION (MobileNetV2)</h6>
+                <div class="ai-preview-box mb-3">
+                    <div class="ai-label">IDENTIFIED: ORGANIC WASTE (95.4%)</div>
+                    <img src="https://via.placeholder.com/300x150/1a1a1a/FFFFFF?text=CAMERA+FEED+ACTIVE" class="img-fluid" alt="AI Feed">
+                </div>
+                <div class="small mb-3">
+                    <div class="d-flex justify-content-between"><span>Inference Time:</span><span class="text-info">42ms</span></div>
+                    <div class="d-flex justify-content-between"><span>Global Accuracy:</span><span class="text-info">91.4%</span></div>
+                </div>
+                <button id="btnOptimize" class="btn btn-success btn-sm w-100 fw-bold mb-2">Generate Optimized Route 🚚</button>
+                <button id="btnClear" class="btn btn-outline-light btn-sm w-100" style="font-size: 0.7rem;">Clear Route</button>
+            </div>
+
+            <div class="card p-3 mb-3" style="max-height: 350px; overflow-y: auto;">
+                <h6 class="mb-3 fw-bold">🗑️ Bin Level Inventory</h6>
+                <div id="bin-status-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4 mb-4">
+        <div class="col-md-6"><div class="card p-3">
+            <h6>📈 Weekly Volume Performance</h6>
+            <div style="height: 250px;"><canvas id="weeklyChart"></canvas></div>
+        </div></div>
+        <div class="col-md-6"><div class="card p-3">
+            <h6>♻️ AI Waste Classification Composition</h6>
+            <div style="height: 250px;"><canvas id="wasteChart"></canvas></div>
+        </div></div>
+    </div>
+</div>
+
+<footer class="text-center text-muted small pb-4">Eco-Tech Uganda • Powered by Firebase & MobileNetV2</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyBq5hzOfU0phdLThW-04vYZ7Cx7Sfp8COA",
+        authDomain: "smart-waste-management-project.firebaseapp.com",
+        projectId: "smart-waste-management-project",
+        storageBucket: "smart-waste-management-project.firebasestorage.app",
+        messagingSenderId: "309823595593",
+        appId: "1:309823595593:web:e034dfea3c30f1b9470b98",
+        measurementId: "G-299WLEH7XQ"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    document.addEventListener("DOMContentLoaded", function() {
+        var map = L.map('map').setView([0.3476, 32.5825], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        let markers = [];
+        let currentRoute = null;
+        let currentLiveBins = [];
+
+        // Chart 1: Line
+        new Chart(document.getElementById('weeklyChart'), {
+            type: 'line',
+            data: { labels:['M','T','W','T','F','S','S'], datasets:[{ label:'Waste KG', data:[400,520,480,710,890,600,920], borderColor:'#28a745', fill:true, tension:0.4 }] },
+            options: { maintainAspectRatio:false }
+        });
+
+        // Chart 2: Doughnut (Based on AI Results)
+        new Chart(document.getElementById('wasteChart'), {
+            type: 'doughnut',
+            data: { labels:['Organic','Textiles','Wood','Plastics','Metal'], datasets:[{ data:[35,25,15,15,10], backgroundColor:['#28a745','#1a5928','#ffc107','#17a2b8','#dc3545'] }] },
+            options: { maintainAspectRatio:false }
+        });
+
+        // Firebase Listener
+        onSnapshot(collection(db, "bins"), (snapshot) => {
+            currentLiveBins = [];
+            snapshot.forEach((doc) => {
+                currentLiveBins.push({ id: doc.id, ...doc.data() });
+            });
+            updateUI(currentLiveBins);
+        });
+
+        function updateUI(data) {
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            let totalW=0, critC=0;
+            let list = document.getElementById('bin-status-list');
+            let log = document.getElementById('activity-log');
+            list.innerHTML="";
+            log.innerHTML="";
+
+            data.forEach(bin => {
+                totalW += (bin.level * 0.5); 
+                let color = bin.level > 80 ? 'danger' : bin.level > 60 ? 'warning' : 'success';
+                if(bin.level > 80) critC++;
+
+                // Map
+                markers.push(L.marker([bin.lat, bin.lng]).addTo(map).bindPopup(`<b>${bin.id}</b><br>Level: ${bin.level}%`));
+
+                // Time for display
+                let timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                // Inventory List
+                list.innerHTML += `
+                    <div class="bin-card">
+                        <div class="d-flex justify-content-between mb-1"><small class="fw-bold">${bin.id}</small><span class="badge bg-${color}">${bin.level}%</span></div>
+                        <div class="progress"><div class="progress-bar bg-${color}" style="width:${bin.level}%"></div></div>
+                        <small class="text-muted" style="font-size:0.6rem">Live Sync: ${timeNow}</small>
+                    </div>`;
+                
+                // Activity Log
+                log.innerHTML += `
+                    <tr><td>${bin.id}</td><td>${bin.level}%</td><td>${timeNow}</td><td><span class="badge bg-${color}">${bin.level > 80 ? 'FULL' : 'OK'}</span></td></tr>
+                `;
+            });
+
+            document.getElementById('total-bins').innerText = data.length;
+            document.getElementById('full-bins').innerText = critC;
+            document.getElementById('waste-collected').innerText = totalW.toFixed(1) + " kg";
+            document.getElementById('co2-saved').innerText = (totalW * 0.04).toFixed(2) + " kg";
+            
+            critC > 0 ? document.getElementById('critical-card').classList.add('pulse-critical') : document.getElementById('critical-card').classList.remove('pulse-critical');
+        }
+
+        document.getElementById('btnOptimize').onclick = () => {
+            if(currentRoute) map.removeLayer(currentRoute);
+            let fullBins = currentLiveBins.filter(b => b.level > 80).map(b => [b.lat, b.lng]);
+            if(fullBins.length < 1) return alert("System Intelligence: No bins require immediate collection.");
+            currentRoute = L.polyline([[0.3136, 32.5811], ...fullBins], {color:'#1a5928', dashArray:'10,10', weight:5}).addTo(map);
+            map.fitBounds(currentRoute.getBounds());
+            document.getElementById('route-status').innerText = "ROUTE OPTIMIZED 🚛";
+            document.getElementById('route-status').className = "badge bg-success";
+        };
+
+        document.getElementById('btnClear').onclick = () => {
+            if(currentRoute) map.removeLayer(currentRoute);
+            document.getElementById('route-status').innerText = "Awaiting Optimization";
+            document.getElementById('route-status').className = "badge bg-secondary";
+            map.setView([0.3476, 32.5825], 14);
+        };
+    });
+</script>
+</body>
+</html>
