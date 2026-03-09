@@ -1,16 +1,25 @@
 import firebase_admin
 from firebase_admin import credentials, auth
 
-# Initialize using your service account
+# 1. Initialize (only if not already initialized)
 cred = credentials.Certificate("serviceAccountKey.json")
-firebase_admin.initialize_app(cred)
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
 
-# The UID you just copied from the Firebase Console
-target_uid = "B1EfrEBZJNboYa1aCOodNQzCkwd2" 
+def assign_user_role(uid, role_name):
+    """
+    Assigns a specific role to a user UID.
+    Roles: 'admin', 'operator', or 'viewer'
+    """
+    try:
+        # Attach the 'role' claim permanently to the user's token
+        auth.set_custom_user_claims(uid, {'role': role_name})
+        print(f"✅ Success! User {uid} is now assigned the role: {role_name}")
+    except Exception as e:
+        print(f"❌ Error assigning role: {e}")
 
-def assign_admin_role(uid):
-    # This attaches the 'admin' claim to your account permanently
-    auth.set_custom_user_claims(uid, {'role': 'admin'})
-    print(f"Success! User {uid} is now an Admin.")
-
-assign_admin_role(target_uid)
+# --- EXECUTION AREA ---
+# Replace these with the actual UIDs you created in the Firebase Console
+assign_user_role("B1EfrEBZJNboYa1aCOodNQzCkwd2", "admin")      # Already done for you
+assign_user_role("SS5q5GG1tWQvW3B0CIADpzP3nF73", "operator")           # For the Truck Driver
+assign_user_role("7lhFes1SAOZjD5y0FCQG1QcFhqG2", "viewer")           # For the Public Resident
