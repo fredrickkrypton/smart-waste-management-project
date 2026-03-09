@@ -1,34 +1,46 @@
-from flask import Flask, render_template, jsonify, request, session
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 import time
 import random
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, auth
+from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = "eco-tech-secret" 
+app.secret_key = "eco-tech-secret-key-uganda" # Change this for production
 
 # -----------------------------
 # FIREBASE SETUP
 # -----------------------------
 try:
+    # Use your new serviceAccountKey.json
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print("✅ Firebase Connected Successfully")
+    print("✅ Firebase & Auth Connected Successfully")
 except Exception as e:
     print(f"❌ Firebase Error: {e}")
 
 # -----------------------------
-# MOCK USERS
+# ROLE-BASED ACCESS CONTROL (RBAC) DECORATORS
 # -----------------------------
-users = {
-    "admin": {"password": "123", "role": "admin"},
-    "manager": {"password": "123", "role": "manager"},
-    "operator": {"password": "123", "role": "operator"}
-}
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session.get('role') != 'admin':
+            return jsonify({"error": "Unauthorized: Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 
 # -----------------------------
-# WINDOWS-SAFE HARDWARE MOCKING
+# HARDWARE / MOCKING LOGIC
 # -----------------------------
 try:
     import RPi.GPIO as GPIO
@@ -36,14 +48,13 @@ try:
     HAS_GPIO = True
 except ImportError:
     HAS_GPIO = False
-    print("⚠️ Running on Windows: Hardware sensors are DISABLED. Using mock data.")
+    print("⚠️ Running on Windows: Using mock data for sensors.")
 
 def get_distance():
     if not HAS_GPIO:
-        return random.randint(5, 50) 
+        return random.randint(5, 45) # Mock distance in cm
     
-    TRIG = 23 
-    ECHO = 24
+    TRIG, ECHO = 23, 24
     GPIO.setup(TRIG, GPIO.OUT)
     GPIO.setup(ECHO, GPIO.IN)
     GPIO.output(TRIG, True)
@@ -56,7 +67,6 @@ def get_distance():
     
     return round((pulse_end - pulse_start) * 17150, 2)
 
-# New helper function to sync data to the cloud
 def sync_to_cloud(bin_id, level, lat, lng):
     try:
         doc_ref = db.collection('bins').document(bin_id)
@@ -75,30 +85,53 @@ def sync_to_cloud(bin_id, level, lat, lng):
 # -----------------------------
 
 @app.route('/')
+@login_required
 def home():
-    return render_template('index.html')
+    # Only logged-in users can see the dashboard
+    return render_template('index.html', role=session.get('role'))
 
-@app.route('/login', methods=['POST'])
-def login():
+@app.route('/login')
+def login_page():
+    return render_template('login.html')
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    """Verifies Firebase ID Token and checks for Admin claims"""
     data = request.json
-    user = users.get(data.get("username"))
-    if user and user["password"] == data.get("password"):
-        session['user'] = data.get("username")
-        session['role'] = user["role"]
-        return jsonify({"message": "Login successful", "role": user["role"]})
-    return jsonify({"error": "Invalid credentials"}), 401
+    id_token = data.get("idToken")
+
+    try:
+        # Verify the token and extract claims
+        decoded_token = auth.verify_id_token(id_token)
+        uid = decoded_token['uid']
+        
+        # Check for the custom 'role' claim we set via set_admin.py
+        role = decoded_token.get('role', 'viewer') 
+        
+        # Save to session
+        session['user'] = uid
+        session['role'] = role
+        
+        return jsonify({"status": "success", "role": role})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 401
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login_page'))
 
 @app.route('/api/bins')
+@login_required
 def get_bins():
     dist = get_distance()
     bin_height = 50
     level_pct = max(0, min(100, round(((bin_height - dist) / bin_height) * 100)))
 
-    # Define our live bin data
     bin_id = "KLA-01"
     lat, lng = 0.3476, 32.5825
     
-    # 🔥 SYNC TO FIREBASE: This pushes the data to the cloud
+    # Push to Firebase Firestore
     sync_to_cloud(bin_id, level_pct, lat, lng)
 
     data = [
