@@ -3,6 +3,8 @@ import base64
 import time
 import random
 import secrets
+import json
+import sqlite3
 from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
@@ -13,6 +15,77 @@ app.secret_key = "eco-tech-secret-key-uganda"
 
 # Shared secret for Raspberry Pi requests
 PI_API_KEY = "eco_tech_pi_secret_key_2024"
+
+# Local persistence for cycle history (kept across restarts)
+CYCLE_DB_PATH = "cycle_history.db"
+
+def init_cycle_store():
+    with sqlite3.connect(CYCLE_DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cycle_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bin_id TEXT NOT NULL,
+                time TEXT NOT NULL,
+                level REAL,
+                cycle_number INTEGER,
+                historical_avg REAL,
+                trend TEXT,
+                waste_composition TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cycle_bin_time ON cycle_history (bin_id, time)")
+
+def append_cycle_history(bin_id, entry):
+    with sqlite3.connect(CYCLE_DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO cycle_history (bin_id, time, level, cycle_number, historical_avg, trend, waste_composition)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                bin_id,
+                entry.get('time'),
+                entry.get('level'),
+                entry.get('cycle_number'),
+                entry.get('historical_avg'),
+                entry.get('trend'),
+                json.dumps(entry.get('waste_composition') or {})
+            )
+        )
+
+def get_cycle_history(bin_id, limit=10):
+    with sqlite3.connect(CYCLE_DB_PATH) as conn:
+        cursor = conn.execute(
+            """
+            SELECT time, level, cycle_number, historical_avg, trend, waste_composition
+            FROM cycle_history
+            WHERE bin_id = ?
+            ORDER BY time DESC
+            LIMIT ?
+            """,
+            (bin_id, limit)
+        )
+        rows = cursor.fetchall()
+
+    history = []
+    for time_value, level, cycle_number, historical_avg, trend, waste_composition in rows[::-1]:
+        try:
+            composition = json.loads(waste_composition) if waste_composition else {}
+        except json.JSONDecodeError:
+            composition = {}
+        history.append({
+            'time': time_value,
+            'level': level,
+            'cycle_number': cycle_number,
+            'historical_avg': historical_avg,
+            'trend': trend,
+            'waste_composition': composition
+        })
+    return history
+
+init_cycle_store()
 
 # -----------------------------
 # FIREBASE SETUP
@@ -70,6 +143,7 @@ def sync_to_cloud(bin_id, level, lat, lng):
             existing_data = existing_doc.to_dict() or {}
             label = existing_data.get('label') or existing_data.get('location_name') or existing_data.get('name') or bin_id
         doc_ref.set({
+            'bin_id': bin_id,
             'label': label,
             'level': level,
             'lat': lat,
@@ -91,7 +165,7 @@ def pi_update():
 
     try:
         data = request.json or {}
-        print(f"📦 Received data: {data.keys()}")
+        print(f"📦 Received keys: {list(data.keys())}")
 
         # Verify the Raspberry Pi is authorized
         api_key = request.headers.get('X-API-Key')
@@ -112,51 +186,75 @@ def pi_update():
         waste_composition = data.get('waste_composition', {})
         status = data.get('status', 'OK')
         alert_triggered = data.get('alert_triggered', False)
+        lat = data.get('lat', 0.3476)
+        lng = data.get('lng', 32.5825)
+
+        # New fields from Pi (use exact payload values)
+        cycle_number = data.get('cycle_number')
+        historical_avg = data.get('historical_avg')
+        trend = data.get('trend')
 
         # Handle image if present
-        if data.get('image_base64'):
-            image_payload = data['image_base64']
+        image_base64 = data.get('image_base64', None)
+
+        if image_base64:
+            image_payload = image_base64
             try:
                 decoded_image = base64.b64decode(image_payload.split(',')[-1])
                 print(f"   📸 Image received: {len(decoded_image)} bytes")
             except Exception as image_error:
                 print(f"   ⚠️ Image decode warning: {image_error}")
 
+        print(f"📝 Writing to Firestore - Bin: {bin_id}")
+        print(f"   Cycle: {cycle_number}, Fill: {fill_level}%, Trend: {trend}")
+        print(f"   Historical avg: {historical_avg}")
+
         update_data = {
+            'bin_id': bin_id,
             'level': fill_level,
+            'lat': lat,
+            'lng': lng,
             'ultrasonic_cm': ultrasonic_cm,
             'waste_composition': waste_composition,
             'status': status,
             'alert_triggered': alert_triggered,
-            'last_updated': firestore.SERVER_TIMESTAMP,
-            'last_classification': firestore.SERVER_TIMESTAMP
+            'cycle_number': cycle_number,
+            'trend': trend,
+            'last_classification': firestore.SERVER_TIMESTAMP,
+            'last_updated': firestore.SERVER_TIMESTAMP
         }
 
-        if data.get('image_base64'):
-            update_data['latest_image_base64'] = data['image_base64'].split(',')[-1]
-            update_data['has_image'] = True
+        update_data['historical_avg'] = historical_avg
+
+        if image_base64:
+            update_data['latest_image_base64'] = f"data:image/jpeg;base64,{image_base64}"
             update_data['image_timestamp'] = firestore.SERVER_TIMESTAMP
 
-        # Get bin coordinates from existing Firestore document
+        # Persist last cycles locally to avoid Firestore overwrite loss
+        cache_entry = {
+            'time': datetime.utcnow().isoformat(),
+            'level': fill_level,
+            'cycle_number': cycle_number,
+            'historical_avg': historical_avg,
+            'trend': trend,
+            'waste_composition': waste_composition
+        }
+        append_cycle_history(bin_id, cache_entry)
+
+        # Get bin label from existing Firestore document
         bin_doc = db.collection('bins').document(bin_id).get()
         if bin_doc.exists:
-            existing = bin_doc.to_dict()
+            existing = bin_doc.to_dict() or {}
             update_data['label'] = existing.get('label', bin_id)
-            update_data['lat'] = existing.get('lat', 0.3476)
-            update_data['lng'] = existing.get('lng', 32.5825)
         else:
             update_data['label'] = data.get('label', bin_id)
-            update_data['lat'] = data.get('lat', 0.3476)
-            update_data['lng'] = data.get('lng', 32.5825)
-
-        print(f"📝 Writing to Firestore - Bin: {bin_id}, Level: {fill_level}% at {datetime.utcnow().isoformat()}Z")
 
         # Update Firestore with Pi data
         doc_ref = db.collection('bins').document(bin_id)
         doc_ref.set(update_data, merge=True)
 
         print("✅ Firestore write successful!")
-        print(f"✅ Pi data received for {bin_id}: {fill_level}% full")
+        print(f"✅ Cycle {cycle_number} data saved for {bin_id}")
         return jsonify({"success": True, "message": "Data synced to Firestore"}), 200
 
     except Exception as e:
@@ -200,10 +298,11 @@ def logout():
 @login_required
 def get_bins():
     user_role = session.get('role')
+    skip_sim = request.args.get('skip_sim') == '1'
     bin_id = "KLA-01"
     lat, lng = 0.3476, 32.5825
     
-    if user_role in ['admin', 'operator']:
+    if user_role in ['admin', 'operator'] and not skip_sim:
         dist = get_distance()
         bin_height = 50
         level_pct = max(0, min(100, round(((bin_height - dist) / bin_height) * 100)))
@@ -213,7 +312,15 @@ def get_bins():
     bins_data = []
     for doc in bins_ref:
         doc_data = doc.to_dict() or {}
-        doc_data.setdefault('label', doc_data.get('location_name') or doc_data.get('name') or doc.id)
+        cache_key = doc_data.get('bin_id') or doc.id
+        cached_history = get_cycle_history(cache_key, limit=10)
+        doc_data['cycle_history'] = cached_history if cached_history else []
+        raw_label = doc_data.get('label') or doc_data.get('bin_id') or doc_data.get('bin_code') or doc_data.get('code') or doc_data.get('location_name') or doc_data.get('name')
+        if raw_label and (raw_label != doc.id or len(str(raw_label)) < 18):
+            doc_data['display_label'] = raw_label
+        else:
+            doc_data['display_label'] = None
+        doc_data.setdefault('label', raw_label or doc.id)
         bins_data.append({"id": doc.id, **doc_data})
         
     return jsonify(bins_data)

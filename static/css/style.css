@@ -346,6 +346,7 @@ body {
     transition: all var(--transition-base);
     position: relative;
     overflow: hidden;
+    animation: card-float 7s ease-in-out infinite;
 }
 
 .stat-card-premium::before {
@@ -601,6 +602,7 @@ body {
     display: flex;
     align-items: center;
     gap: 0.375rem;
+    animation: badge-breathe 2.6s ease-in-out infinite;
 }
 
 .pulse-dot {
@@ -804,6 +806,22 @@ body {
     color: var(--dark-text);
 }
 
+.metric-value.trend-up {
+    color: var(--success);
+}
+
+.metric-value.trend-down {
+    color: var(--danger);
+}
+
+.metric-value.trend-flat {
+    color: var(--warning);
+}
+
+.metric-value.trend-unknown {
+    color: var(--dark-text-secondary);
+}
+
 .status-summary {
     background: rgba(0, 0, 0, 0.2);
     border-radius: var(--radius-md);
@@ -833,6 +851,11 @@ body {
 
 .status-warning {
     color: var(--warning);
+    font-weight: 600;
+}
+
+.status-info {
+    color: var(--info);
     font-weight: 600;
 }
 
@@ -1146,6 +1169,7 @@ body {
     box-shadow: var(--shadow-md);
     border: 1px solid var(--gray-200);
     overflow: hidden;
+    animation: card-float 8s ease-in-out infinite;
 }
 
 .analytics-card-header {
@@ -1174,6 +1198,7 @@ body {
     font-size: 0.75rem;
     font-weight: 600;
     color: var(--gray-600);
+    animation: badge-breathe 3s ease-in-out infinite;
 }
 
 .analytics-card-body {
@@ -1198,6 +1223,7 @@ body {
     position: relative;
     flex-shrink: 0;
     background: conic-gradient(#e5e7eb 0 100%);
+    animation: glow-pulse 4s ease-in-out infinite;
 }
 
 .donut-chart-premium::after {
@@ -1296,6 +1322,7 @@ body {
     border-radius: 8px 8px 4px 4px;
     transition: height var(--transition-slow);
     box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+    animation: bar-rise 700ms ease-out both;
 }
 
 .bar-time-label {
@@ -1647,6 +1674,68 @@ body.login-page {
 
     50% {
         opacity: 0.5;
+    }
+}
+
+@keyframes card-float {
+    0% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-3px);
+    }
+
+    100% {
+        transform: translateY(0);
+    }
+}
+
+@keyframes glow-pulse {
+    0% {
+        box-shadow: 0 0 0 rgba(16, 185, 129, 0.0);
+    }
+
+    50% {
+        box-shadow: 0 0 18px rgba(16, 185, 129, 0.18);
+    }
+
+    100% {
+        box-shadow: 0 0 0 rgba(16, 185, 129, 0.0);
+    }
+}
+
+@keyframes bar-rise {
+    0% {
+        transform: scaleY(0.7);
+        opacity: 0.6;
+    }
+
+    100% {
+        transform: scaleY(1);
+        opacity: 1;
+    }
+}
+
+@keyframes badge-breathe {
+    0% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.04);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
     }
 }
 
@@ -2026,6 +2115,30 @@ body.login-page {
 
 .bin-label-tooltip::before {
     border-top-color: var(--eco-primary);
+}
+
+/* Base station (depot) marker styles */
+.base-station-marker__icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--info) 0%, var(--info-dark) 100%);
+    color: white;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.18);
+    font-size: 1rem;
+}
+
+.base-station-label {
+    background: rgba(59, 130, 246, 0.95);
+    color: white;
+    border-radius: 8px;
+    padding: 0.25rem 0.6rem;
+    font-weight: 700;
+    font-size: 0.8rem;
+    box-shadow: var(--shadow-md);
 }
 
 /* ============================================
