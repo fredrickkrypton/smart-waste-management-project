@@ -217,7 +217,7 @@
                     <div class="analytics-header">
                         <div class="analytics-title">
                             <i class="fas fa-chart-pie"></i>
-                            <h2>Advanced Analytics & Insights</h2>
+                            <h2>Data Summary</h2>
                         </div>
                         <div class="analytics-controls">
                             <span class="range-label" id="analytics-range-label">Showing last 24 hours</span>
@@ -233,8 +233,8 @@
                         <!-- Waste Composition Donut -->
                         <div class="analytics-card">
                             <div class="analytics-card-header">
-                                <h4><i class="fas fa-chart-doughnut"></i> Waste Composition Distribution</h4>
-                                <span class="scope-badge" id="composition-scope">0 bins analyzed</span>
+                                <h4><i class="fas fa-chart-doughnut"></i> What Is In The Bin</h4>
+                                <span class="scope-badge" id="composition-scope">0 bins checked</span>
                             </div>
                             <div class="analytics-card-body">
                                 <div class="donut-container">
@@ -260,7 +260,7 @@
                                     </div>
                                 </div>
                                 <p class="analytics-card-note" id="composition-note">
-                                    This chart shows which type of rubbish is most common in the bins being checked.
+                                    This shows the main type of waste in the bins we checked.
                                 </p>
                             </div>
                         </div>
@@ -268,14 +268,14 @@
                         <!-- Fill Level Trend -->
                         <div class="analytics-card">
                             <div class="analytics-card-header">
-                                <h4><i class="fas fa-chart-line"></i> Fill Level Trend Analysis</h4>
-                                <span class="trend-badge" id="trend-summary">Live Average</span>
+                                <h4><i class="fas fa-chart-line"></i> Last 10 Readings</h4>
+                                <span class="trend-badge" id="trend-summary">Latest Readings</span>
                             </div>
                             <div class="analytics-card-body trend-chart-card-body">
                                 <div class="volume-bars-premium" id="volume-bars"></div>
-                                <div class="trend-note" id="trend-note">Average fill level by time bucket.</div>
+                                <div class="trend-note" id="trend-note">Most recent readings for this bin.</div>
                                 <p class="analytics-card-note" id="trend-note-simple">
-                                    This chart helps you see when bins get fuller so pickups can be planned before overflow.
+                                    This mini chart shows the last 10 fill readings.
                                 </p>
                             </div>
                         </div>
@@ -283,30 +283,17 @@
                         <!-- Waste Type Trend by Location -->
                         <div class="analytics-card">
                             <div class="analytics-card-header">
-                                <h4><i class="fas fa-location-dot"></i> Waste-Type Trend by Location</h4>
+                                <h4><i class="fas fa-location-dot"></i> Common Waste By Area</h4>
                                 <span class="scope-badge" id="location-waste-summary">No data</span>
                             </div>
                             <div class="analytics-card-body">
                                 <div class="location-waste-list" id="location-waste-trend"></div>
                                 <p class="analytics-card-note" id="location-waste-note">
-                                    This shows which waste type is most common in each area, so teams can plan sorting and awareness by neighborhood.
+                                    This shows the main waste type in each area.
                                 </p>
                             </div>
                         </div>
 
-                        <!-- Overflow Prediction -->
-                        <div class="analytics-card">
-                            <div class="analytics-card-header">
-                                <h4><i class="fas fa-triangle-exclamation"></i> Overflow Prediction (Next Few Hours)</h4>
-                                <span class="trend-badge" id="overflow-summary">No risk</span>
-                            </div>
-                            <div class="analytics-card-body">
-                                <div class="overflow-list" id="overflow-prediction-list"></div>
-                                <p class="analytics-card-note" id="overflow-note">
-                                    This estimates which bins may cross the critical level soon, so pickups can happen before overflow.
-                                </p>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -346,6 +333,18 @@
                                 <span class="metric-label"><i class="fas fa-bell"></i> Alert Status</span>
                                 <span class="metric-value" id="selected-bin-alert">--</span>
                             </div>
+                            <div class="metric-item">
+                                <span class="metric-label"><i class="fas fa-repeat"></i> Cycle Number</span>
+                                <span class="metric-value" id="selected-bin-cycle">--</span>
+                            </div>
+                            <div class="metric-item">
+                                <span class="metric-label"><i class="fas fa-arrow-trend-up"></i> Trend</span>
+                                <span class="metric-value" id="selected-bin-trend">--</span>
+                            </div>
+                            <div class="metric-item">
+                                <span class="metric-label"><i class="fas fa-chart-area"></i> Average Fill Level</span>
+                                <span class="metric-value" id="selected-bin-historical">--</span>
+                            </div>
                         </div>
 
                         <div class="status-summary">
@@ -360,6 +359,14 @@
                             <div class="status-row">
                                 <span><i class="fas fa-route"></i> Route Status</span>
                                 <span class="status-warning" id="route-status-text">Awaiting Optimization</span>
+                            </div>
+                            <div class="status-row">
+                                <span><i class="fas fa-road"></i> Total Distance</span>
+                                <span class="status-info" id="route-distance">--</span>
+                            </div>
+                            <div class="status-row">
+                                <span><i class="fas fa-gas-pump"></i> Fuel to Consume</span>
+                                <span class="status-info" id="route-fuel">--</span>
                             </div>
                         </div>
 
@@ -382,7 +389,7 @@
                     <div class="card-header-premium-dark">
                         <i class="fas fa-brain"></i>
                         <h3>AI WASTE COMPOSITION</h3>
-                        <span class="ai-badge">Pi Neural Network</span>
+                        <span class="ai-badge">MOBILENETV2 MODEL</span>
                     </div>
                     <div class="card-body-premium-dark">
                         <div class="composition-grid">

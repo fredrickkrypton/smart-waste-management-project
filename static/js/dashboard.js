@@ -102,6 +102,9 @@ const WASTE_DENSITY_DEFAULTS = {
     hazardous: 300
 };
 
+// Fleet base station (truck depot) - trucks start/return here
+const BASE_STATION = [0.32376, 32.57270];
+
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
 }
@@ -219,8 +222,26 @@ function drawRouteWithArrows(map, routePoints, routeArrows, options = {}) {
     return route;
 }
 
+async function fetchCachedHistoryMap() {
+    try {
+        const response = await fetch('/api/bins?skip_sim=1', { credentials: 'include' });
+        if (!response.ok) return new Map();
+        const bins = await response.json();
+        const map = new Map();
+        bins.forEach((bin) => {
+            if (!bin) return;
+            if (bin.id) map.set(bin.id, bin);
+            if (bin.bin_id) map.set(bin.bin_id, bin);
+        });
+        return map;
+    } catch (error) {
+        console.warn('Cached history fetch failed:', error);
+        return new Map();
+    }
+}
+
 async function getRoadAlignedRoute(waypoints) {
-    const depot = [0.3136, 32.5811];
+    const depot = BASE_STATION;
     const routePoints = [depot, ...waypoints];
     const coordinates = routePoints.map(([lat, lng]) => `${lng},${lat}`).join(';');
     const url = `https://router.project-osrm.org/trip/v1/driving/${coordinates}?overview=full&geometries=geojson&roundtrip=false&source=first&destination=last`;
@@ -235,7 +256,29 @@ async function getRoadAlignedRoute(waypoints) {
         throw new Error(data.message || 'Unable to build road route');
     }
 
-    return data.trips[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    const routeGeometry = data.trips[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    const distanceInMeters = data.trips[0].distance || 0;
+    const distanceInKm = (distanceInMeters / 1000).toFixed(2);
+
+    return {
+        geometry: routeGeometry,
+        distance: distanceInKm,
+        distanceMeters: distanceInMeters
+    };
+}
+
+// ============================================
+// FUEL CONSUMPTION CALCULATION
+// ============================================
+// Uganda waste trucks average fuel consumption: 4-6 liters per 100km
+// Using 5 liters per 100km as baseline for heavy-duty garbage trucks
+function calculateFuelConsumption(distanceKm) {
+    // Use a more realistic heavy truck baseline (liters per 100km).
+    // Heavy garbage trucks commonly consume ~25-35 L/100km depending on load and stops.
+    const fuelEfficiency = 30; // liters per 100km (baseline for heavy-duty trucks)
+    const urbanFactor = 1.2; // account for stop-start, idling, urban traffic
+    const fuelNeeded = (distanceKm / 100) * fuelEfficiency * urbanFactor;
+    return fuelNeeded.toFixed(2);
 }
 
 // ============================================
@@ -279,7 +322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let activeRangeKey = '24h';
 
     const RANGE_CONFIG = {
-        '1h': { label: 'last 1 hour', windowMs: 60 * 60 * 1000, buckets: 6, bucketMs: 10 * 60 * 1000, short: '1H' },
+        '1h': { label: 'last 1 hour', windowMs: 60 * 60 * 1000, buckets: 60, bucketMs: 1 * 60 * 1000, short: '1H' },
         '24h': { label: 'last 24 hours', windowMs: 24 * 60 * 60 * 1000, buckets: 8, bucketMs: 3 * 60 * 60 * 1000, short: '24H' },
         '7d': { label: 'last 7 days', windowMs: 7 * 24 * 60 * 60 * 1000, buckets: 7, bucketMs: 24 * 60 * 60 * 1000, short: '7D' }
     };
@@ -297,8 +340,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    function buildHistorySamples(bins) {
+        const samples = [];
+        bins.forEach((bin) => {
+            if (!Array.isArray(bin?.cycle_history)) return;
+            bin.cycle_history.forEach((entry) => {
+                if (!entry) return;
+                samples.push({
+                    ...bin,
+                    level: entry.level ?? bin.level,
+                    waste_composition: entry.waste_composition || bin.waste_composition,
+                    last_updated: entry.time || bin.last_updated
+                });
+            });
+        });
+        return samples;
+    }
+
     function formatBucketLabel(rangeKey, offsetFromNow) {
-        if (rangeKey === '1h') return `${offsetFromNow * 10}m`;
+        if (rangeKey === '1h') return `${offsetFromNow}m`;
         if (rangeKey === '24h') return `${offsetFromNow * 3}h`;
         if (rangeKey === '7d') return `${offsetFromNow}d`;
         return `${offsetFromNow}`;
@@ -385,41 +445,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         ].sort((a, b) => b[1] - a[1])[0][0]} waste, based on the selected time range.`;
     }
 
-    function renderTrendChart(binsInRange) {
+    function renderTrendChart(bins) {
         const container = document.getElementById('volume-bars');
         const summary = document.getElementById('trend-summary');
         const note = document.getElementById('trend-note');
-        const config = RANGE_CONFIG[activeRangeKey] || RANGE_CONFIG['24h'];
 
         if (!container) return;
 
-        const now = Date.now();
-        const start = now - config.windowMs;
-        const buckets = Array.from({ length: config.buckets }, () => ({ sum: 0, count: 0 }));
-        container.style.gridTemplateColumns = `repeat(${config.buckets}, 1fr)`;
+        const latestBin = getLatestBin(bins);
+        const fallbackBin = bins.find((bin) => Array.isArray(bin?.cycle_history) && bin.cycle_history.length);
+        const sourceBin = (Array.isArray(latestBin?.cycle_history) && latestBin.cycle_history.length)
+            ? latestBin
+            : fallbackBin;
+        const history = Array.isArray(sourceBin?.cycle_history) ? sourceBin.cycle_history : [];
+        const entries = history.slice(-10);
+        container.style.gridTemplateColumns = 'repeat(10, 1fr)';
 
-        binsInRange.forEach((bin) => {
-            const timestamp = getBinTimestamp(bin);
-            if (!timestamp) return;
-            const time = timestamp.getTime();
-            const index = Math.max(0, Math.min(config.buckets - 1, Math.floor((time - start) / config.bucketMs)));
-            buckets[index].sum += Number(bin?.level || 0);
-            buckets[index].count += 1;
-        });
+        if (!sourceBin || entries.length === 0) {
+            if (summary) summary.innerText = 'No cycle data';
+            if (note) note.innerText = 'Waiting for cycle history from the selected bin.';
+            container.innerHTML = '<div class="analytics-empty">No cycle history available yet.</div>';
+            return;
+        }
 
-        const averages = buckets.map((bucket) => bucket.count ? bucket.sum / bucket.count : 0);
-        const peak = Math.max(100, ...averages);
-        const recentAvg = averages.length ? averages.reduce((acc, value) => acc + value, 0) / averages.length : 0;
+        const toTime = (value) => {
+            if (value?.toDate) return value.toDate().getTime();
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+        };
 
-        if (summary) summary.innerText = `${config.short} avg ${formatPercent(recentAvg)}`;
-        if (note) note.innerText = `Average fill level in ${config.buckets} buckets across ${config.label}.`;
+        const sorted = entries
+            .map((entry, index) => ({
+                ...entry,
+                index,
+                timeMs: toTime(entry.time)
+            }))
+            .sort((a, b) => (a.timeMs || 0) - (b.timeMs || 0));
 
-        container.innerHTML = averages.map((value, index) => {
-            const height = Math.max(8, Math.round((value / peak) * 180));
-            const label = formatBucketLabel(activeRangeKey, config.buckets - 1 - index);
+        const levels = sorted.map((entry) => Number(entry.level || 0));
+        const peak = Math.max(100, ...levels);
+        const avg = levels.length ? levels.reduce((acc, value) => acc + value, 0) / levels.length : 0;
+
+        if (summary) summary.innerText = `Avg ${formatPercent(avg)}`;
+        if (note) note.innerText = `Latest ${levels.length} cycles from ${sourceBin.display_label || sourceBin.bin_id || sourceBin.id}.`;
+
+        container.innerHTML = sorted.map((entry, index) => {
+            const height = Math.max(8, Math.round((Number(entry.level || 0) / peak) * 180));
+            const label = entry.cycle_number ?? `#${index + 1}`;
             return `
                 <div class="bar-column">
-                    <div class="bar-value-label">${formatPercent(value)}</div>
+                    <div class="bar-value-label">${formatPercent(entry.level || 0)}</div>
                     <div class="bar-visual" style="height:${height}px"></div>
                     <div class="bar-time-label">${label}</div>
                 </div>
@@ -521,93 +596,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         `).join('');
     }
 
-    function estimateHoursToCritical(bin) {
-        const level = Number(bin?.level || 0);
-        if (level >= 80) return 0;
-
-        const history = binHistory.get(bin.id) || [];
-        if (history.length >= 2) {
-            const last = history[history.length - 1];
-            const first = history[0];
-            const deltaLevel = last.level - first.level;
-            const deltaHours = (last.time - first.time) / (1000 * 60 * 60);
-
-            if (deltaHours > 0.2 && deltaLevel > 0.5) {
-                const ratePerHour = deltaLevel / deltaHours;
-                const hours = (80 - level) / ratePerHour;
-                if (Number.isFinite(hours) && hours >= 0) {
-                    return hours;
-                }
-            }
-        }
-
-        if (level >= 75) return 1.5;
-        if (level >= 70) return 3;
-        if (level >= 60) return 6;
-        if (level >= 50) return 10;
-        return 18;
-    }
-
-    function renderOverflowPrediction(bins) {
-        const container = document.getElementById('overflow-prediction-list');
-        const summary = document.getElementById('overflow-summary');
-        const note = document.getElementById('overflow-note');
-        if (!container) return;
-
-        const predictions = bins
-            .map((bin) => {
-                const etaHours = estimateHoursToCritical(bin);
-                const level = Number(bin?.level || 0);
-                return {
-                    id: bin.id,
-                    level,
-                    etaHours,
-                    risk: etaHours <= 3 ? 'high' : etaHours <= 8 ? 'medium' : 'low'
-                };
-            })
-            .filter((item) => item.etaHours <= 12)
-            .sort((a, b) => a.etaHours - b.etaHours)
-            .slice(0, 6);
-
-        if (!predictions.length) {
-            if (summary) summary.innerText = 'No immediate risk';
-            if (note) note.innerText = 'Good news: no bin is likely to overflow soon based on current levels and recent behavior.';
-            container.innerHTML = '<div class="analytics-empty">No bins are predicted to hit critical level within the next 12 hours.</div>';
-            return;
-        }
-
-        const urgentCount = predictions.filter((item) => item.etaHours <= 6).length;
-        if (summary) summary.innerText = `${urgentCount} bins in < 6h`;
-        if (note) note.innerText = `This estimate shows which bins may reach critical level soon. Prioritize bins with lower ETA (hours remaining).`;
-
-        container.innerHTML = predictions.map((item) => {
-            const etaLabel = item.etaHours <= 0 ? 'Now' : `${item.etaHours.toFixed(1)}h`;
-            const progress = Math.max(item.level, Math.min(100, 100 - (item.etaHours / 12) * 100));
-            const riskClass = item.risk === 'high' ? 'overflow-risk-high' : item.risk === 'medium' ? 'overflow-risk-medium' : 'overflow-risk-low';
-
-            return `
-                <div class="overflow-row">
-                    <div class="overflow-row-header">
-                        <span class="overflow-bin-id">${item.id}</span>
-                        <span class="overflow-eta">ETA to critical: ${etaLabel}</span>
-                    </div>
-                    <div class="overflow-level-text">Current fill level: ${formatPercent(item.level)}</div>
-                    <div class="overflow-progress-track">
-                        <div class="overflow-progress-fill ${riskClass}" style="width:${progress.toFixed(1)}%"></div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
 
     function renderPresentationCharts(bins) {
-        const inRange = getBinsForRange(bins, activeRangeKey);
+        const historySamples = buildHistorySamples(bins);
+        const source = historySamples.length ? historySamples : bins;
+        const inRange = getBinsForRange(source, activeRangeKey);
         updateBinHistory(bins);
         renderRangeToggle();
         renderCompositionChart(inRange);
-        renderTrendChart(inRange);
+        renderTrendChart(bins);
         renderWasteTrendByLocation(inRange);
-        renderOverflowPrediction(bins);
     }
 
     // ============================================
@@ -659,6 +657,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selectedTimeEl = document.getElementById('selected-bin-time');
         const selectedCoordsEl = document.getElementById('selected-bin-coords');
         const selectedAlertEl = document.getElementById('selected-bin-alert');
+        const selectedCycleEl = document.getElementById('selected-bin-cycle');
+        const selectedTrendEl = document.getElementById('selected-bin-trend');
+        const selectedHistoricalEl = document.getElementById('selected-bin-historical');
         const routeStatusText = document.getElementById('route-status-text');
 
         if (latestBin) {
@@ -668,6 +669,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (selectedStatusEl) selectedStatusEl.innerText = getBinStatus(latestBin);
             if (selectedCoordsEl) selectedCoordsEl.innerText = `${latestBin.lat?.toFixed(4) ?? '--'}, ${latestBin.lng?.toFixed(4) ?? '--'}`;
             if (selectedAlertEl) selectedAlertEl.innerText = latestBin.alert_triggered ? '⚠️ YES' : '✅ NO';
+            if (selectedCycleEl) selectedCycleEl.innerText = latestBin.cycle_number ?? '--';
+            if (selectedTrendEl) {
+                const trendValue = (latestBin.trend || '').toString().toLowerCase();
+                selectedTrendEl.innerText = latestBin.trend || '--';
+                selectedTrendEl.classList.remove('trend-up', 'trend-down', 'trend-flat', 'trend-unknown');
+
+                if (trendValue.includes('increase') || trendValue.includes('up') || trendValue.includes('rising')) {
+                    selectedTrendEl.classList.add('trend-up');
+                } else if (trendValue.includes('decrease') || trendValue.includes('down') || trendValue.includes('fall')) {
+                    selectedTrendEl.classList.add('trend-down');
+                } else if (trendValue.includes('stable') || trendValue.includes('flat') || trendValue.includes('steady')) {
+                    selectedTrendEl.classList.add('trend-flat');
+                } else if (trendValue) {
+                    selectedTrendEl.classList.add('trend-unknown');
+                }
+            }
+            if (selectedHistoricalEl) {
+                selectedHistoricalEl.innerText = latestBin.historical_avg == null
+                    ? '--'
+                    : formatPercent(latestBin.historical_avg);
+            }
 
             const updateTime = latestBin.last_updated?.toDate?.() || latestBin.last_classification?.toDate?.() || new Date();
             if (selectedTimeEl) selectedTimeEl.innerText = updateTime.toLocaleTimeString();
@@ -678,6 +700,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (selectedStatusEl) selectedStatusEl.innerText = '--';
             if (selectedCoordsEl) selectedCoordsEl.innerText = '--';
             if (selectedAlertEl) selectedAlertEl.innerText = '--';
+            if (selectedCycleEl) selectedCycleEl.innerText = '--';
+            if (selectedTrendEl) {
+                selectedTrendEl.innerText = '--';
+                selectedTrendEl.classList.remove('trend-up', 'trend-down', 'trend-flat', 'trend-unknown');
+            }
+            if (selectedHistoricalEl) selectedHistoricalEl.innerText = '--';
             if (selectedTimeEl) selectedTimeEl.innerText = '--';
             if (routeStatusText) routeStatusText.innerText = 'Awaiting data';
         }
@@ -711,6 +739,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 maxZoom: 20,
                 detectRetina: true
             }).addTo(map);
+            // Add base station marker (depot)
+            try {
+                const baseIcon = L.divIcon({
+                    className: 'base-station-marker',
+                    html: `<div class="base-station-marker__icon"><i class="fas fa-industry"></i></div>`,
+                    iconSize: [36, 36],
+                    iconAnchor: [18, 36]
+                });
+                const baseMarker = L.marker(BASE_STATION, { icon: baseIcon }).addTo(map);
+                baseMarker.bindTooltip('Base Station', { permanent: true, direction: 'right', className: 'base-station-label', offset: [10, 0] });
+            } catch (err) {
+                console.warn('Base station marker failed:', err);
+            }
             console.log('✅ Map initialized');
         } catch (error) {
             console.error('Map error:', error);
@@ -751,16 +792,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        let binIndex = 1;
         data.forEach((bin) => {
             totalW += estimateBinWeightKg(bin);
             const level = Number(bin.level || 0);
             const color = getBinLevelColor(level);
             if (level > 80) critC++;
 
+            const displayName = bin.bin_id || bin.id;
+            const isAutoId = typeof bin?.id === 'string' && bin.id.length >= 18;
+            const rawLabel = bin.display_label || displayName || bin.bin_code || bin.label || bin.location_name || bin.name || '';
+            const label = (!rawLabel || (rawLabel === bin.id && isAutoId))
+                ? `BIN_${String(binIndex).padStart(2, '0')}`
+                : rawLabel;
+
             // Add map markers
             if (mapObject && bin.lat && bin.lng && typeof L !== 'undefined') {
                 try {
-                    const label = bin.label || bin.location_name || bin.name || bin.id;
                     const markerColor = level > 80 ? '#ef4444' : level > 60 ? '#f59e0b' : '#10b981';
 
                     const markerIcon = L.divIcon({
@@ -786,12 +834,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                         .bindPopup(`
                             <div style="font-family: 'Inter', sans-serif;">
                                 <h4 style="margin: 0 0 8px; color: #059669;">${label}</h4>
-                                <p style="margin: 4px 0;"><strong>Bin ID:</strong> ${bin.id}</p>
+                                <p style="margin: 4px 0;"><strong>Bin Code:</strong> ${label}</p>
+                                <p style="margin: 4px 0; font-size: 0.85rem; color: #6b7280;"><strong>Firestore ID:</strong> ${bin.id}</p>
+                                <p style="margin: 4px 0;"><strong>Cycle:</strong> ${bin.cycle_number ?? '--'}</p>
                                 <p style="margin: 4px 0;"><strong>Fill Level:</strong> ${formatPercent(level)}</p>
                                 <p style="margin: 4px 0;"><strong>Status:</strong> ${getBinStatus(bin)}</p>
                             </div>
                         `);
                     markersArray.push(marker);
+                    binIndex++;
                 } catch (error) {
                     console.warn('Marker error:', error);
                 }
@@ -799,12 +850,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+            if (bin.historical_avg) {
+                console.log(`Historical avg: ${bin.historical_avg}%`);
+            }
+            if (bin.trend) {
+                console.log(`Trend: ${bin.trend}`);
+            }
+
             // Update bin inventory list
             if (list) {
                 list.innerHTML += `
                     <div class="bin-card-premium">
                         <div class="bin-card-header">
-                            <span class="bin-id"><i class="fas fa-qrcode"></i> ${bin.id}</span>
+                            <span class="bin-id"><i class="fas fa-qrcode"></i> ${label}</span>
                             <span class="bin-level-badge bg-${color}" style="background: ${level > 80 ? '#ef4444' : level > 60 ? '#f59e0b' : '#10b981'}; color: white;">${formatPercent(level)}</span>
                         </div>
                         <div class="bin-progress">
@@ -821,13 +879,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (log) {
                 log.innerHTML += `
                     <tr>
-                        <td><i class="fas fa-qrcode"></i> ${bin.id}</td>
+                        <td><i class="fas fa-qrcode"></i> ${label}</td>
                         <td><strong>${formatPercent(level)}</strong></td>
                         <td>${timeNow}</td>
                         <td><span class="badge" style="background: ${level > 80 ? '#ef4444' : level > 60 ? '#f59e0b' : '#10b981'}; color: white; padding: 4px 8px; border-radius: 20px; font-size: 0.7rem; font-weight: 600;">${level > 80 ? 'CRITICAL' : 'OK'}</span></td>
                     </tr>
                 `;
             }
+
+            binIndex++;
         });
 
         // Update KPI cards
@@ -888,7 +948,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         onSnapshot(
             binsRef,
-            (snapshot) => {
+            async (snapshot) => {
                 console.log(`📡 Firestore update: ${snapshot.size} document(s) received`);
                 const firestoreStatus = document.getElementById('firestore-status');
                 const firestoreStatusDetail = document.getElementById('firestore-status-detail');
@@ -907,6 +967,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log(`   - ${docSnap.id}: level=${data.level}%, status=${data.status}`);
                     currentLiveBins.push({ id: docSnap.id, ...data });
                 });
+
+                const cachedMap = await fetchCachedHistoryMap();
+                if (cachedMap.size) {
+                    currentLiveBins = currentLiveBins.map((bin) => {
+                        const cached = cachedMap.get(bin.id) || cachedMap.get(bin.bin_id);
+                        if (!cached) return bin;
+                        return {
+                            ...bin,
+                            cycle_history: cached.cycle_history || bin.cycle_history || []
+                        };
+                    });
+                }
 
                 updateUI(currentLiveBins, map, markers);
                 renderOperationalSnapshot(currentLiveBins);
@@ -958,13 +1030,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (map) {
                 const routeStatus = document.getElementById('route-status');
                 const routeStatusText = document.getElementById('route-status-text');
+                const routeDistance = document.getElementById('route-distance');
+                const routeFuel = document.getElementById('route-fuel');
 
                 if (routeStatus) routeStatus.innerText = 'ROUTING...';
                 if (routeStatusText) routeStatusText.innerText = 'Calculating road route';
 
                 try {
-                    const roadRoute = await getRoadAlignedRoute(fullBins);
-                    currentRoute = drawRouteWithArrows(map, roadRoute, currentRouteArrows);
+                    const routeData = await getRoadAlignedRoute(fullBins);
+                    currentRoute = drawRouteWithArrows(map, routeData.geometry, currentRouteArrows);
+
+                    // Calculate fuel consumption
+                    const fuelNeeded = calculateFuelConsumption(parseFloat(routeData.distance));
 
                     if (routeStatus) {
                         routeStatus.innerText = 'ROUTE OPTIMIZED';
@@ -972,9 +1049,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         routeStatus.style.background = '#10b981';
                         routeStatus.style.color = 'white';
                     }
-                    if (routeStatusText) routeStatusText.innerText = 'Route follows roads';
+                    if (routeStatusText) routeStatusText.innerText = `Route follows roads • ${routeData.distance} km • ${fuelNeeded} L`;
+                    if (routeDistance) routeDistance.innerText = `${routeData.distance} km`;
+                    if (routeFuel) routeFuel.innerText = `${fuelNeeded} L`;
                 } catch (error) {
                     console.warn('Road routing failed, using fallback polyline:', error);
+                    const fallbackDistance = '0';
                     currentRoute = drawRouteWithArrows(map, [[0.3136, 32.5811], ...fullBins], currentRouteArrows, { fallback: true });
 
                     if (routeStatus) {
@@ -984,6 +1064,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                         routeStatus.style.color = 'white';
                     }
                     if (routeStatusText) routeStatusText.innerText = 'Fallback route used';
+                    if (routeDistance) routeDistance.innerText = '--';
+                    if (routeFuel) routeFuel.innerText = '--';
                 }
             }
         };
@@ -1004,6 +1086,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             const routeStatusText = document.getElementById('route-status-text');
             if (routeStatusText) routeStatusText.innerText = 'Awaiting Optimization';
+
+            const routeDistance = document.getElementById('route-distance');
+            if (routeDistance) routeDistance.innerText = '--';
+
+            const routeFuel = document.getElementById('route-fuel');
+            if (routeFuel) routeFuel.innerText = '--';
         };
     }
 });
